@@ -1,8 +1,9 @@
 #include "endpoints/OutputServer.hpp"
-#include "compat/format.hpp"  // ← было: #include <format>
+#include "compat/format.hpp"
 
 #include "beast/Protocol.hpp"
 #include "codec/Transcoder.hpp"
+#include "net/BufferedWriter.hpp"
 #include "net/Poll.hpp"
 
 #include <algorithm>
@@ -49,7 +50,7 @@ void OutputServer::run(std::stop_token st) {
         if (cfd < 0) continue;
 
         char     ipStr[INET6_ADDRSTRLEN] = "?";
-        uint16_t peerPort                = 0;
+        uint16_t peerPort = 0;
         if (ss.ss_family == AF_INET) {
             auto* s4 = reinterpret_cast<sockaddr_in*>(&ss);
             ::inet_ntop(AF_INET, &s4->sin_addr, ipStr, sizeof(ipStr));
@@ -80,13 +81,17 @@ void OutputServer::run(std::stop_token st) {
     std::cerr << std::format("[{}] stopped\n", name_);
 }
 
-void OutputServer::handleClient(net::Socket sock, std::string /*peer*/,
+void OutputServer::handleClient(net::Socket sock,
+                                 std::string /*peer*/,
                                  std::shared_ptr<SendQueue> queue,
                                  std::stop_token st) {
     using namespace std::chrono;
 
     const bool doKeepalive = keepalive_ && (outputFormat_ == codec::Format::Beast);
     auto       lastSend    = steady_clock::now();
+
+    net::BufferedWriter writer(sock.fd());
+    uint8_t encodeBuf[codec::kMaxEncodedSize];
 
     while (!st.stop_requested()) {
         milliseconds waitTime;
@@ -106,15 +111,25 @@ void OutputServer::handleClient(net::Socket sock, std::string /*peer*/,
         if (result == SendQueue::PopResult::Timeout) {
             if (doKeepalive) {
                 const auto hb = beast::heartbeatBytes();
-                if (!net::writeAll(sock.fd(), hb.data(), hb.size(), st)) break;
+                if (!writer.append(hb.data(), hb.size(), st)) break;
                 lastSend = steady_clock::now();
             }
+            if (!writer.flush(st)) break;
             continue;
         }
 
-        const auto encoded = codec::encode(*msg, outputFormat_);
-        if (encoded.empty()) continue;
-        if (!net::writeAll(sock.fd(), encoded.data(), encoded.size(), st)) break;
+        // Batch: drain all available messages without re-entering the cv
+        bool ok = true;
+        do {
+            const size_t n = codec::encode(*msg, outputFormat_, encodeBuf);
+            if (n > 0) {
+                ok = writer.append(encodeBuf, n, st);
+                if (!ok) break;
+            }
+        } while (ok && !st.stop_requested() && queue->tryPop(msg));
+
+        if (!ok) break;
+        if (!writer.flush(st)) break;
         lastSend = steady_clock::now();
     }
 }

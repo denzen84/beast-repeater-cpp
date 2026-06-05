@@ -1,25 +1,19 @@
 #pragma once
 
 #include "codec/Message.hpp"
-#include <vector>
+#include <cstddef>
 #include <cstdint>
 
 namespace codec {
 
-// Кодировать AdsMessage в целевой wire-формат.
-// Правила транскодирования:
-//   Beast   → Beast   : полная копия (timestamp + signal сохраняются)
-//   Beast   → AvrStd  : только frame (timestamp/signal отбрасываются)
-//   Beast   → AvrMlat : frame + timestamp (signal отбрасывается)
-//   AvrStd  → Beast   : frame, timestamp=0, signal=0
-//   AvrStd  → AvrStd  : копия
-//   AvrStd  → AvrMlat : frame, timestamp=0
-//   AvrMlat → Beast   : frame + timestamp, signal=0
-//   AvrMlat → AvrStd  : только frame
-//   AvrMlat → AvrMlat : полная копия
+// Encode msg to targetFmt, writing directly into outBuf.
 //
-// Возвращает пустой вектор для кадров без представления в целевом формате
-// (например, Beast type-4/type-5 конфигурационные кадры → AVR-форматы).
-std::vector<uint8_t> encode(const AdsMessage& msg, Format targetFmt);
+// outBuf MUST point to at least kMaxEncodedSize bytes (stack-allocate it).
+// Returns bytes written, or 0 if the frame has no representation in the
+// target format (Beast type-4/5 config frames → AVR outputs).
+//
+// No heap allocation.
+size_t encode(const AdsMessage& msg, Format targetFmt,
+              uint8_t* outBuf) noexcept;
 
 } // namespace codec

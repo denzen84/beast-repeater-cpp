@@ -22,27 +22,27 @@ void BeastParser::process() {
     size_t pos = 0;
 
     while (pos < buf_.size()) {
-        // ── 1. Синхробайт ─────────────────────────────────────────────────
+        // ── 1. Sync byte ──────────────────────────────────────────────────
         if (buf_[pos] != ESC) { ++pos; continue; }
 
-        // ── 2. Байт типа ──────────────────────────────────────────────────
+        // ── 2. Type byte ──────────────────────────────────────────────────
         if (pos + 1 >= buf_.size()) break;
         const uint8_t type     = buf_[pos + 1];
         const int     expected = bodySize(type);
         if (expected < 0) { ++pos; continue; }
 
-        // ── 3. Сканирование тела с подсчётом логических байт ───────────────
+        // ── 3. Find frame boundary (count unescaped body bytes) ───────────
         size_t scan    = pos + 2;
         int    count   = 0;
         bool   needMore = false;
         bool   corrupt  = false;
 
         while (count < expected) {
-            if (scan >= buf_.size()) { needMore = true; break; }
+            if (scan >= buf_.size())            { needMore = true;  break; }
             if (buf_[scan] == ESC) {
-                if (scan + 1 >= buf_.size()) { needMore = true; break; }
-                if (buf_[scan + 1] == ESC)   { scan += 2; ++count; }
-                else                         { pos = scan; corrupt = true; break; }
+                if (scan + 1 >= buf_.size())    { needMore = true;  break; }
+                if (buf_[scan + 1] == ESC)      { scan += 2; ++count; }
+                else                            { pos = scan; corrupt = true; break; }
             } else {
                 ++scan; ++count;
             }
@@ -50,28 +50,40 @@ void BeastParser::process() {
         if (corrupt)  continue;
         if (needMore) break;
 
-        // ── 4. Удаление экранирования ─────────────────────────────────────
-        std::vector<uint8_t> body;
-        body.reserve(static_cast<size_t>(expected));
-        for (size_t i = pos + 2; i < scan; ) {
-            if (buf_[i] == ESC) { body.push_back(buf_[i + 1]); i += 2; }
-            else                { body.push_back(buf_[i]);     ++i;    }
-        }
-        // Структура тела: [0..5]=timestamp  [6]=signal  [7..end]=payload
-
-        // ── 5. Формирование AdsMessage ────────────────────────────────────
+        // ── 4. Extract directly into AdsMessage (no intermediate vector) ──
         codec::AdsMessage msg;
         msg.srcFormat = codec::Format::Beast;
         msg.beastType = type;
 
-        // Timestamp: big-endian 48 бит
-        uint64_t ts = 0;
-        for (int i = 0; i < 6; ++i)
-            ts = (ts << 8) | body[static_cast<size_t>(i)];
-        msg.timestamp = ts;
-        msg.signal    = body[6];
+        const uint8_t* src = buf_.data() + pos + 2;
+        const uint8_t* end = buf_.data() + scan;
 
-        msg.frame.assign(body.begin() + 7, body.end());
+        // 6-byte big-endian MLAT timestamp (unescape inline)
+        uint64_t ts = 0;
+        for (int i = 0; i < 6 && src < end; ++i) {
+            uint8_t b;
+            if (*src == ESC) { ++src; b = *src; } else { b = *src; }
+            ++src;
+            ts = (ts << 8) | b;
+        }
+        msg.timestamp = ts;
+
+        // Signal byte
+        if (src < end) {
+            if (*src == ESC) { ++src; msg.signal = *src; }
+            else             {        msg.signal = *src; }
+            ++src;
+        }
+
+        // Frame payload
+        msg.frameLen = 0;
+        while (src < end &&
+               msg.frameLen < static_cast<uint8_t>(codec::AdsMessage::kMaxFrame)) {
+            uint8_t b;
+            if (*src == ESC) { ++src; b = *src; } else { b = *src; }
+            ++src;
+            msg.frame[msg.frameLen++] = b;
+        }
 
         switch (type) {
             case '1': msg.frameType = codec::FrameType::ModeAC; break;

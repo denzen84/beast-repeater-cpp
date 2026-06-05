@@ -11,26 +11,25 @@ namespace beast {
 
 inline constexpr uint8_t ESC = 0x1A;
 
-// Ожидаемый размер тела кадра (байты после байта типа, без экранирования).
-// -1 для неизвестных типов.
+// Expected unescaped body size in bytes (after the type byte). -1 = unknown.
 constexpr int bodySize(uint8_t type) noexcept {
     switch (type) {
         case '1': return  9;   // 6 MLAT + 1 signal + 2 Mode-AC
         case '2': return 14;   // 6 MLAT + 1 signal + 7 short Mode-S
         case '3': return 21;   // 6 MLAT + 1 signal + 14 long Mode-S
-        case '4': return 21;   // 6 MLAT + 1 unused + DIP/конфигурация
+        case '4': return 21;   // 6 MLAT + 1 unused + DIP/config data
         case '5': return 21;   // extended
         default:  return -1;
     }
 }
 
-// Сырые байты keepalive-сообщения (ESC '1' + 9 нулевых байт).
+// Raw bytes of a Beast keepalive heartbeat: ESC '1' + 9 zero bytes.
 inline std::vector<uint8_t> heartbeatBytes() {
     return { 0x1A, '1', 0,0,0,0,0,0,0,0,0 };
 }
 
-// Потоковый парсер Beast Binary.
-// Возвращает декодированный codec::AdsMessage для каждого полного кадра.
+// Streaming parser for Beast Binary protocol.
+// Returns decoded codec::AdsMessage (with inline frame buffer) per frame.
 class BeastParser {
 public:
     void feed(std::span<const uint8_t> data);
